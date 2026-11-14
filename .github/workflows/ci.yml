@@ -1,0 +1,56 @@
+name: Unity SDK CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  dotnet-check:
+    name: .NET Standard 2.1 Build & NUnit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate UPM manifests
+        run: |
+          python3 -m json.tool package.json > /dev/null
+          python3 -m json.tool Runtime/Wolin.Unity.asmdef > /dev/null
+          python3 -m json.tool Tests/Editor/Wolin.Unity.Tests.asmdef > /dev/null
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore DotNet~/Wolin.Unity.sln
+
+      - name: Build Runtime (netstandard2.1 / C# 9.0) & Tests
+        run: dotnet build DotNet~/Wolin.Unity.sln --configuration Release --no-restore
+
+      - name: Run NUnit test suite
+        run: dotnet test DotNet~/Wolin.Unity.sln --configuration Release --no-build --verbosity normal
+
+  gameci-editmode:
+    name: GameCI Unity 2022.3 EditMode Tests
+    if: vars.ENABLE_GAMECI == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Run Unity EditMode tests (UPM packageMode)
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 2022.3.55f1
+          packageMode: true
+          testMode: editmode

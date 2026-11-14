@@ -1,0 +1,33 @@
+# Unity generated directories
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# .NET / MSBuild artifacts
+**/bin/
+**/obj/
+TestResults/
+*.trx
+*.coverage
+*.user
+*.suo
+*.userprefs
+
+# IDE & OS metadata
+.vs/
+.idea/
+.vscode/
+*.Rider*
+.DS_Store
+Thumbs.db
+
+# .NET / MSBuild build outputs inside hidden UPM folders
+DotNet~/**/bin/
+DotNet~/**/obj/
+

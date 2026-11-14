@@ -1,0 +1,29 @@
+{
+  "name": "id.wolin.unity",
+  "version": "0.1.0",
+  "displayName": "Wolin Solid Pod SDK",
+  "description": "Official Wolin C# SDK for Unity: Solid-OIDC + RFC 9449 DPoP (ES256), WebID Profile & pim:storage discovery, and Solid LDP CRUD with ETag concurrency control.",
+  "unity": "2022.3",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "wolin",
+    "solid",
+    "pod",
+    "oidc",
+    "dpop",
+    "webid",
+    "ldp",
+    "rdf"
+  ],
+  "author": {
+    "name": "Entropy Paradox, Inc.",
+    "url": "https://wolin.id"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wolin-id/sdk-unity.git"
+  },
+  "documentationUrl": "https://github.com/wolin-id/sdk-unity#readme",
+  "changelogUrl": "https://github.com/wolin-id/sdk-unity/releases",
+  "licensesUrl": "https://github.com/wolin-id/sdk-unity/blob/main/LICENSE-MIT"
+}
