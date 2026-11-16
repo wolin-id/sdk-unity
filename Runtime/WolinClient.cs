@@ -19,8 +19,56 @@ namespace Wolin.Unity
     /// </summary>
     public sealed class WolinClient : IDisposable
     {
+        /// <summary>
+        /// Official Wolin (月印千江) Solid-OIDC Provider &amp; Passport production endpoint.
+        /// </summary>
+        public const string DefaultAuthUrl = "https://auth.wolin.id";
+
+        /// <summary>
+        /// Official Wolin (月印千江) Sovereign Solid Pod Engine production endpoint.
+        /// </summary>
+        public const string DefaultPodUrl = "https://pod.wolin.id";
+
+        /// <summary>
+        /// Minimum allowed character length for a Wolin <c>pod_id</c> handle.
+        /// </summary>
+        public const int MinPodIdLength = 3;
+
+        /// <summary>
+        /// Maximum allowed character length for a Wolin <c>pod_id</c> handle.
+        /// </summary>
+        public const int MaxPodIdLength = 32;
+
         public const string DefaultRdfAccept =
             "text/turtle, application/ld+json;q=0.9, application/n-triples;q=0.8, text/n3;q=0.7";
+
+        private const int MaxSafeRedirects = 5;
+
+        private static readonly HashSet<string> ReservedPodIds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "abuse", "admin", "administrator", "ads", "api", "app", "apps", "assets",
+            "auth", "authorize", "autoconfig", "autodiscover", "backup", "beta", "billing", "blog",
+            "calendar", "cdn", "chat", "cloud", "consent", "console", "contact", "control",
+            "corp", "dashboard", "data", "dev", "dns", "doc", "docs", "download",
+            "downloads", "edge", "email", "engine", "enterprise", "entropy", "events", "files",
+            "forum", "ftp", "gateway", "git", "graphql", "health", "healthz", "help",
+            "home", "host", "hostmaster", "id", "idp", "images", "imap", "img",
+            "inbox", "info", "internal", "jwks", "legal", "local", "localhost", "login",
+            "logout", "logs", "mail", "mailer", "manage", "mcp", "media", "metrics",
+            "mta-sts", "mx", "net", "news", "no-reply", "noreply", "notify", "ns",
+            "ns1", "ns2", "ns3", "ns4", "oauth", "official", "oidc", "ops",
+            "org", "origin", "passport", "pay", "payment", "payments", "pod", "pods",
+            "pop", "pop3", "portal", "postmaster", "press", "pricing", "private", "prod",
+            "production", "profile", "proxy", "pub", "public", "register", "registry", "relay",
+            "root", "rpc", "rss", "sandbox", "search", "secure", "security", "server",
+            "service", "services", "session", "settings", "sftp", "signin", "signout", "signup",
+            "smtp", "solid", "sparql", "ssh", "sso", "stage", "staging", "static",
+            "stats", "status", "storage", "store", "support", "sync", "sys", "system",
+            "team", "telemetry", "terms", "test", "testing", "token", "trust", "updates",
+            "upload", "uploads", "userinfo", "vault", "verify", "vpn", "wac", "web",
+            "webhook", "webhooks", "webid", "webmail", "webmaster", "well-known", "wolin", "ws",
+            "wss", "www"
+        };
 
         private readonly HttpClient _httpClient;
         private readonly bool _disposeHttpClient;
@@ -31,7 +79,7 @@ namespace Wolin.Unity
         /// <summary>
         /// Initializes a new instance of the <see cref="WolinClient"/> class.
         /// </summary>
-        /// <param name="httpClient">Optional <see cref="HttpClient"/> instance. If omitted, an internal client is created.</param>
+        /// <param name="httpClient">Optional <see cref="HttpClient"/> instance. If omitted, an internal client with <c>AllowAutoRedirect = false</c> is created.</param>
         /// <param name="dpopSigner">Optional <see cref="DPoPSigner"/> instance. If omitted, an ephemeral P-256 keypair is generated.</param>
         /// <param name="disposeHttpClient">Whether disposing <see cref="WolinClient"/> should dispose a caller-supplied <paramref name="httpClient"/>.</param>
         /// <param name="disposeSigner">Whether disposing <see cref="WolinClient"/> should dispose a caller-supplied <paramref name="dpopSigner"/>.</param>
@@ -43,7 +91,11 @@ namespace Wolin.Unity
         {
             if (httpClient == null)
             {
-                _httpClient = new HttpClient();
+                var handler = new HttpClientHandler
+                {
+                    AllowAutoRedirect = false
+                };
+                _httpClient = new HttpClient(handler, disposeHandler: true);
                 _disposeHttpClient = true;
             }
             else
@@ -84,6 +136,76 @@ namespace Wolin.Unity
         /// Automatically updated whenever a response includes a <c>DPoP-Nonce</c> header.
         /// </summary>
         public string? DPoPNonce { get; set; }
+
+        /// <summary>
+        /// Validates a Wolin <c>pod_id</c> handle (<c>3..32</c> chars, lowercase ASCII <c>[a-z0-9-]</c>,
+        /// starts and ends with <c>[a-z0-9]</c>, no consecutive <c>--</c>, and not a reserved infrastructure handle).
+        /// Throws <see cref="WolinException"/> when invalid.
+        /// </summary>
+        public static string ValidatePodId(string podId)
+        {
+            if (podId == null)
+            {
+                throw new WolinException("pod_id must not be null.");
+            }
+
+            if (podId.Length < MinPodIdLength || podId.Length > MaxPodIdLength)
+            {
+                throw new WolinException(
+                    $"pod_id must be between {MinPodIdLength} and {MaxPodIdLength} lowercase characters.");
+            }
+
+            if (podId[0] == '-' || podId[podId.Length - 1] == '-')
+            {
+                throw new WolinException(
+                    "pod_id must contain only lowercase ASCII [a-z0-9-] and start and end with [a-z0-9].");
+            }
+
+            for (int i = 0; i < podId.Length; i++)
+            {
+                char c = podId[i];
+                bool isLower = c >= 'a' && c <= 'z';
+                bool isDigit = c >= '0' && c <= '9';
+                if (!isLower && !isDigit && c != '-')
+                {
+                    throw new WolinException(
+                        "pod_id must contain only lowercase ASCII [a-z0-9-] and start and end with [a-z0-9].");
+                }
+            }
+
+            if (podId.IndexOf("--", StringComparison.Ordinal) >= 0)
+            {
+                throw new WolinException("pod_id must not contain consecutive hyphens ('--').");
+            }
+
+            if (ReservedPodIds.Contains(podId))
+            {
+                throw new WolinException($"pod_id '{podId}' is reserved for system infrastructure.");
+            }
+
+            return podId;
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> if <paramref name="podId"/> satisfies all Wolin <c>pod_id</c> syntax and reservation rules.
+        /// </summary>
+        public static bool IsValidPodId(string? podId)
+        {
+            if (string.IsNullOrEmpty(podId))
+            {
+                return false;
+            }
+
+            try
+            {
+                _ = ValidatePodId(podId!);
+                return true;
+            }
+            catch (WolinException)
+            {
+                return false;
+            }
+        }
 
         /// <summary>
         /// Configures the DPoP-bound Solid-OIDC access token (and optional WebID) used to authenticate subsequent LDP requests.
@@ -237,11 +359,12 @@ namespace Wolin.Unity
                 throw new ArgumentNullException(nameof(resourceUri));
             }
 
+            string acceptHeader = string.IsNullOrWhiteSpace(accept) ? DefaultRdfAccept : accept!;
+            ValidateHeaderValue(acceptHeader, nameof(accept));
+
             Func<HttpRequestMessage> factory = () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, resourceUri);
-                string acceptHeader = string.IsNullOrWhiteSpace(accept) ? DefaultRdfAccept : accept!;
-                ValidateHeaderValue(acceptHeader, nameof(accept));
                 req.Headers.TryAddWithoutValidation("Accept", acceptHeader);
 
                 if (!string.IsNullOrWhiteSpace(ifNoneMatch))
@@ -252,15 +375,67 @@ namespace Wolin.Unity
                 return req;
             };
 
-            using (HttpResponseMessage response = await SendWithDpopAsync(factory, attachAccessToken: true, cancellationToken).ConfigureAwait(false))
+            HttpResponseMessage response = await SendWithDpopAsync(factory, attachAccessToken: true, cancellationToken).ConfigureAwait(false);
+            string? fallbackETag = null;
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? fallbackHeaders = null;
+
+            try
             {
+                if (IsRedirectStatusCode(response.StatusCode))
+                {
+                    fallbackETag = ExtractETag(response);
+                    fallbackHeaders = CollectHeaders(response);
+                    Uri currentUri = resourceUri;
+
+                    for (int hop = 0; hop < MaxSafeRedirects; hop++)
+                    {
+                        Uri? nextUri = ResolveRedirectLocation(currentUri, response);
+                        if (nextUri == null)
+                        {
+                            break;
+                        }
+
+                        bool sameOrigin = IsSameOrigin(resourceUri, nextUri);
+                        response.Dispose();
+
+                        Uri targetHopUri = nextUri;
+                        Func<HttpRequestMessage> redirectFactory = () =>
+                        {
+                            var redirectReq = new HttpRequestMessage(HttpMethod.Get, targetHopUri);
+                            redirectReq.Headers.TryAddWithoutValidation("Accept", acceptHeader);
+                            return redirectReq;
+                        };
+
+                        response = await SendWithDpopAsync(
+                            redirectFactory,
+                            attachAccessToken: sameOrigin,
+                            cancellationToken).ConfigureAwait(false);
+                        currentUri = nextUri;
+
+                        if (!IsRedirectStatusCode(response.StatusCode))
+                        {
+                            break;
+                        }
+
+                        if (hop == MaxSafeRedirects - 1)
+                        {
+                            throw new WolinException(
+                                $"Exceeded maximum redirect hops ({MaxSafeRedirects}) while fetching '{resourceUri}'.");
+                        }
+                    }
+                }
+
                 if (response.StatusCode == HttpStatusCode.NotModified && !string.IsNullOrWhiteSpace(ifNoneMatch))
                 {
-                    return await ToPodResourceAsync(resourceUri, response, readBody: false).ConfigureAwait(false);
+                    return await ToPodResourceAsync(resourceUri, response, readBody: false, fallbackETag, fallbackHeaders).ConfigureAwait(false);
                 }
 
                 await EnsureSuccessOrThrowAsync(resourceUri, response).ConfigureAwait(false);
-                return await ToPodResourceAsync(resourceUri, response, readBody: true).ConfigureAwait(false);
+                return await ToPodResourceAsync(resourceUri, response, readBody: true, fallbackETag, fallbackHeaders).ConfigureAwait(false);
+            }
+            finally
+            {
+                response.Dispose();
             }
         }
 
@@ -606,15 +781,17 @@ namespace Wolin.Unity
         private static async Task<PodResource> ToPodResourceAsync(
             Uri requestUri,
             HttpResponseMessage response,
-            bool readBody)
+            bool readBody,
+            string? fallbackETag = null,
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? fallbackHeaders = null)
         {
             byte[] payload = readBody && response.Content != null
                 ? await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
                 : Array.Empty<byte>();
 
             string? contentType = response.Content?.Headers?.ContentType?.ToString();
-            string? eTag = ExtractETag(response);
-            IReadOnlyDictionary<string, IReadOnlyList<string>> headers = CollectHeaders(response);
+            string? eTag = ExtractETag(response) ?? fallbackETag;
+            IReadOnlyDictionary<string, IReadOnlyList<string>> headers = CollectHeaders(response, fallbackHeaders);
 
             return new PodResource(
                 requestUri,
@@ -623,6 +800,48 @@ namespace Wolin.Unity
                 eTag,
                 response.StatusCode,
                 headers);
+        }
+
+        private static bool IsRedirectStatusCode(HttpStatusCode statusCode)
+        {
+            int code = (int)statusCode;
+            return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+        }
+
+        private static Uri? ResolveRedirectLocation(Uri baseUri, HttpResponseMessage response)
+        {
+            Uri? locationUri = response.Headers.Location;
+            if (locationUri == null)
+            {
+                string? rawLoc = ExtractHeaderFirst(response.Headers, "Location");
+                if (string.IsNullOrWhiteSpace(rawLoc))
+                {
+                    return null;
+                }
+
+                if (!Uri.TryCreate(rawLoc, UriKind.RelativeOrAbsolute, out Uri? parsedLoc) || parsedLoc == null)
+                {
+                    throw new WolinException($"Malformed redirect Location header '{rawLoc}'.");
+                }
+
+                locationUri = parsedLoc;
+            }
+
+            Uri resolved = locationUri.IsAbsoluteUri ? locationUri : new Uri(baseUri, locationUri);
+            if ((resolved.Scheme != Uri.UriSchemeHttp && resolved.Scheme != Uri.UriSchemeHttps)
+                || !string.IsNullOrEmpty(resolved.UserInfo))
+            {
+                throw new WolinException($"Disallowed redirect Location target '{resolved}'.");
+            }
+
+            return resolved;
+        }
+
+        private static bool IsSameOrigin(Uri first, Uri second)
+        {
+            return string.Equals(first.Scheme, second.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(first.Host, second.Host, StringComparison.OrdinalIgnoreCase)
+                && first.Port == second.Port;
         }
 
         private static async Task EnsureSuccessOrThrowAsync(Uri requestUri, HttpResponseMessage response)
@@ -685,7 +904,9 @@ namespace Wolin.Unity
             return null;
         }
 
-        private static IReadOnlyDictionary<string, IReadOnlyList<string>> CollectHeaders(HttpResponseMessage response)
+        private static IReadOnlyDictionary<string, IReadOnlyList<string>> CollectHeaders(
+            HttpResponseMessage response,
+            IReadOnlyDictionary<string, IReadOnlyList<string>>? fallbackHeaders = null)
         {
             var dict = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -708,6 +929,19 @@ namespace Wolin.Unity
                     else
                     {
                         dict[kvp.Key] = ToReadOnlyList(kvp.Value);
+                    }
+                }
+            }
+
+            if (fallbackHeaders != null)
+            {
+                string[] fallbackKeys = { "Link", "WAC-Allow", "ETag" };
+                for (int i = 0; i < fallbackKeys.Length; i++)
+                {
+                    string key = fallbackKeys[i];
+                    if (!dict.ContainsKey(key) && fallbackHeaders.TryGetValue(key, out IReadOnlyList<string>? fallbackVals))
+                    {
+                        dict[key] = fallbackVals;
                     }
                 }
             }

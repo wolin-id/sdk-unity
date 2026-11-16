@@ -158,7 +158,7 @@ namespace Wolin.Unity.Tests
                 <#me>
                     a foaf:Person ;
                     foaf:name ""Alice # Not A Comment""@en ;
-                    solid:oidcIssuer <https://id.wolin.id> , <https://backup-idp.example.org> ;
+                    solid:oidcIssuer <https://auth.wolin.id> , <https://backup-idp.example.org> ;
                     pim:storage </> , <https://vault.wolin.id/alice/> ;
                     solid:account [
                         a solid:Account ;
@@ -179,12 +179,12 @@ namespace Wolin.Unity.Tests
                 "https://alice.wolin.id/",
                 "https://vault.wolin.id/alice/"
             }));
-            Assert.That(profile.PrimaryOidcIssuer, Is.EqualTo("https://id.wolin.id/"));
+            Assert.That(profile.PrimaryOidcIssuer, Is.EqualTo("https://auth.wolin.id/"));
             Assert.That(profile.OidcIssuers, Does.Contain("https://backup-idp.example.org/"));
             Assert.That(profile.Inboxes, Is.EqualTo(new[] { "https://alice.wolin.id/inbox/" }));
             Assert.That(profile.Types, Does.Contain("http://xmlns.com/foaf/0.1/Person"));
 
-            Assert.DoesNotThrow(() => profile.VerifyOidcIssuer("https://id.wolin.id/"));
+            Assert.DoesNotThrow(() => profile.VerifyOidcIssuer("https://auth.wolin.id/"));
             Assert.Throws<WolinException>(() => profile.VerifyOidcIssuer("https://rogue-idp.example.com/"));
         }
 
@@ -223,7 +223,7 @@ namespace Wolin.Unity.Tests
                     const string profileTtl = @"
                         @prefix pim: <http://www.w3.org/ns/pim/space#> .
                         @prefix solid: <http://www.w3.org/ns/solid/terms#> .
-                        <#me> solid:oidcIssuer <https://id.wolin.id> ;
+                        <#me> solid:oidcIssuer <https://auth.wolin.id> ;
                               pim:storage <https://alice.wolin.id/> .
                     ";
                     var resp = new HttpResponseMessage(HttpStatusCode.OK)
@@ -366,7 +366,7 @@ namespace Wolin.Unity.Tests
                 string dpop = req.Headers.GetValues("DPoP").Single();
                 string payloadJson = Encoding.UTF8.GetString(DPoPSigner.Base64UrlDecode(dpop.Split('.')[1]));
 
-                if (req.RequestUri!.AbsoluteUri == "https://id.wolin.id/oauth/token")
+                if (req.RequestUri!.AbsoluteUri == "https://auth.wolin.id/oauth/token")
                 {
                     tokenAttempts++;
                     Assert.That(payloadJson, Does.Not.Contain("\"ath\":"), "Token endpoint DPoP proof must not carry ath.");
@@ -415,7 +415,7 @@ namespace Wolin.Unity.Tests
             using var client = new WolinClient(httpClient);
 
             SolidOidcTokenResponse tokenResp = await client.ExchangeAuthorizationCodeAsync(
-                new Uri("https://id.wolin.id/oauth/token"),
+                new Uri("https://auth.wolin.id/oauth/token"),
                 clientId: "unity-game-client",
                 code: "auth-code-123",
                 redirectUri: "wolin://callback",
@@ -437,6 +437,95 @@ namespace Wolin.Unity.Tests
             Assert.That(created.StatusCode, Is.EqualTo(HttpStatusCode.Created));
             Assert.That(created.ETag, Is.EqualTo("\"created-v1\""));
             Assert.That(client.DPoPNonce, Is.EqualTo("pod-nonce-999"));
+        }
+
+        [Test]
+        public void PodIdValidation_EnforcesLengthCharsetHyphenAndReservedRules()
+        {
+            Assert.That(WolinClient.DefaultAuthUrl, Is.EqualTo("https://auth.wolin.id"));
+            Assert.That(WolinClient.DefaultPodUrl, Is.EqualTo("https://pod.wolin.id"));
+
+            string[] validHandles = { "bob", "alice", "alice-01", new string('a', 32), "team-alpha-2026" };
+            foreach (string valid in validHandles)
+            {
+                Assert.That(WolinClient.IsValidPodId(valid), Is.True, valid);
+                Assert.That(WolinClient.ValidatePodId(valid), Is.EqualTo(valid));
+            }
+
+            string[] invalidHandles =
+            {
+                "", "a", "ab", new string('a', 33), "Alice", "-alice", "alice-",
+                "alice--dev", "xn--p1ai", "alice_01", "alice.dev",
+                "auth", "pod", "pods", "api", "admin", "wolin", "www"
+            };
+            foreach (string invalid in invalidHandles)
+            {
+                Assert.That(WolinClient.IsValidPodId(invalid), Is.False, invalid);
+                Assert.Throws<WolinException>(() => WolinClient.ValidatePodId(invalid));
+            }
+        }
+
+        [Test]
+        public async Task WolinClient_Follows302SignedAssetRedirectWithoutLeakingAuthOrDpopHeaders()
+        {
+            var recorded = new List<CapturedRequest>();
+            byte[] assetBytes = Encoding.UTF8.GetBytes("wolin-signed-r2-asset-binary-payload");
+
+            var handler = new StubHttpMessageHandler((req, bodyBytes) =>
+            {
+                recorded.Add(CapturedRequest.From(req, bodyBytes));
+                string url = req.RequestUri!.AbsoluteUri;
+
+                if (url == "https://pod.wolin.id/pods/alice/media/model.glb")
+                {
+                    Assert.That(req.Headers.Authorization?.Scheme, Is.EqualTo("DPoP"));
+                    Assert.That(req.Headers.Contains("DPoP"), Is.True);
+
+                    var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+                    redirect.Headers.Location = new Uri("https://auth.wolin.id/assets/alice/media/model.glb?exp=1763500060&sig=ok");
+                    redirect.Headers.ETag = new EntityTagHeaderValue("\"asset-etag-v1\"");
+                    redirect.Headers.TryAddWithoutValidation("Link", "<http://www.w3.org/ns/ldp#NonRDFSource>; rel=\"type\"");
+                    return redirect;
+                }
+
+                if (url == "https://auth.wolin.id/assets/alice/media/model.glb?exp=1763500060&sig=ok")
+                {
+                    if (req.Headers.Authorization != null || req.Headers.Contains("DPoP"))
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                        {
+                            Content = new StringContent("Leaked Authorization or DPoP header to external asset CDN")
+                        };
+                    }
+
+                    var ok = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(assetBytes)
+                    };
+                    ok.Content.Headers.ContentType = new MediaTypeHeaderValue("model/gltf-binary");
+                    return ok;
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+
+            using var httpClient = new HttpClient(handler);
+            using var client = new WolinClient(httpClient);
+            client.SetAccessToken("solid-oidc-dpop-token", "https://alice.wolin.id/profile/card#me");
+
+            PodResource asset = await client.GetAsync(
+                "https://pod.wolin.id/pods/alice/media/model.glb",
+                accept: "model/gltf-binary");
+
+            Assert.That(asset.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+            Assert.That(asset.Content, Is.EqualTo(assetBytes));
+            Assert.That(asset.ContentType, Is.EqualTo("model/gltf-binary"));
+            Assert.That(asset.ETag, Is.EqualTo("\"asset-etag-v1\""));
+            Assert.That(asset.Headers.ContainsKey("Link"), Is.True);
+
+            Assert.That(recorded.Count, Is.EqualTo(2));
+            Assert.That(recorded[1].AuthorizationScheme, Is.Null);
+            Assert.That(recorded[1].DpopHeader, Is.Null);
         }
 
         private sealed class CapturedRequest
