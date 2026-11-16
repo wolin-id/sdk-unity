@@ -2,7 +2,7 @@
   "name": "id.wolin.unity",
   "version": "0.1.0",
   "displayName": "Wolin Solid Pod SDK",
-  "description": "Official Wolin C# SDK for Unity: Solid-OIDC + RFC 9449 DPoP (ES256), WebID Profile & pim:storage discovery, and Solid LDP CRUD with ETag concurrency control.",
+  "description": "Official Wolin (月印千江) C# SDK for Unity: Solid-OIDC + RFC 9449 DPoP (ES256), WebID Profile & pim:storage discovery, and Solid LDP CRUD with ETag concurrency control.",
   "unity": "2022.3",
   "license": "MIT OR Apache-2.0",
   "keywords": [
